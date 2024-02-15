@@ -29,8 +29,21 @@ const fxAttributes = [
   "fxLayout",
   "fxLayoutAlign",
   "fxGap",
+  "fxHide",
   "fxFlex",
+  "fxFlex.xs",
+  "fxFlex.sm",
+  "fxFlex.md",
+  "fxFlex.lg",
+  "fxFlex.xl",
+  "fxFlex.lt-sm",
+  "fxFlex.lt-md",
   "fxFlex.lt-lg",
+  "fxFlex.lt-xl",
+  "fxFlex.gt-xs",
+  "fxFlex.gt-sm",
+  "fxFlex.gt-md",
+  "fxFlex.gt-lg",
 ];
 
 function getArgs() {
@@ -52,10 +65,16 @@ function getArgs() {
 
 function convertFlexLayoutToTailwind(filePath) {
   const html = fs.readFileSync(filePath, "utf-8");
-  return extractHtmlTags(html).reduce(
+  const noComments = deleteComments(html);
+  return extractHtmlTags(noComments).reduce(
     (html, tag) => html.replace(tag, convertTag(tag)),
-    html
+    noComments
   );
+}
+
+function deleteComments(html) {
+  const regex = /<!--[\s\S]*?-->/g;
+  return html.replace(regex, "");
 }
 
 function convertTag(tag) {
@@ -67,20 +86,6 @@ function convertTag(tag) {
     xmlMode: true,
     decodeEntities: false,
     pseudos: {
-      // const $ = cheerio.load('<div class="foo"></div><div data-bar="boo"></div>', {
-      //   pseudos: {
-      //     // `:foo` is an alias for `div.foo`
-      //     foo: 'div.foo',
-      //     // `:bar(val)` is equivalent to `[data-bar=val s]`
-      //     bar: (el, val) => el.attribs['data-bar'] === val,
-      //   },
-      // });
-
-      // $(':foo').length; // 1
-      // $('div:bar(boo)').length; // 1
-      // $('div:bar(baz)').length; // 0
-
-      //create a hasAttributeStartingWith pseudo selector to check if the element has any attribute starting with a given string
       startswith: (el, val) => {
         if (!val) return false;
         const attributes = Object.keys(el.attribs);
@@ -89,84 +94,126 @@ function convertTag(tag) {
     },
   });
 
-  $("[fxLayout], [fxLayoutGap], [fxLayoutAlign]").each((_, element) => {
-    const $element = $(element);
+  $(":startswith(fxLayout)").each((_, elem) => {
+    const declarations = getDeclarations(elem, "fxLayout");
+    declarations.forEach((declaration) => {
+      const { isBreakpoint, breakpoint, declaration: actualDeclaration } = checkBreakpointFxLayout(declaration);
 
-    const fxLayout = $element.attr("fxLayout");
-    const fxLayoutGap = $element.attr("fxLayoutGap");
-    const fxLayoutAlign = $element.attr("fxLayoutAlign");
+      if (actualDeclaration === "fxLayout") {
+        const $element = $(elem);
+        const fxLayout = $element.attr(declaration);
+        convertFxLayoutToTailwind($element, fxLayout, isBreakpoint, breakpoint, declaration);
+      }
 
-    if (fxLayout) {
-      convertFxLayoutToTailwind($element, fxLayout);
-    }
+      if (actualDeclaration === "fxLayoutGap") {
+        const $element = $(elem);
+        const fxLayout = $element.attr("fxLayout");
+        const fxLayoutGap = $element.attr(declaration);
+        convertFxLayoutGapToTailwind($element, fxLayout, fxLayoutGap, isBreakpoint, breakpoint, declaration);
+      }
 
-    if (fxLayoutGap) {
-      convertFxLayoutGapToTailwind($element, fxLayout, fxLayoutGap);
-    }
+      if (actualDeclaration === "fxLayoutAlign") {
+        const $element = $(elem);
+        const fxLayoutAlign = $element.attr(declaration);
+        convertFxLayoutALignToTailwind($element, fxLayoutAlign, isBreakpoint, breakpoint, declaration);
+      }
 
-    if (fxLayoutAlign) {
-      convertFxLayoutALignToTailwind($element, fxLayoutAlign);
-    }
-
-    if (fxLayout || fxLayoutGap || fxLayoutAlign) {
-      $element.addClass(handleClasses("flex"));
-    }
+      if (actualDeclaration === "fxLayout" || actualDeclaration === "fxLayoutGap" || actualDeclaration === "fxLayoutAlign") {
+        $(elem).addClass(handleClasses("flex")).removeAttr(declaration);
+      }
+    });
   });
 
-  $(":startswith(fxFlex)").each((_, elem) => {
-    const breakpoints = getBreakpoints(elem, "fxFlex");
-    // [ 'fxFlex', 'fxFlex.lt-md' ]
-    breakpoints.forEach((breakpoint) => {
+  $(":startswith(fxHide)").each((_, elem) => {
+    const declarations = getDeclarations(elem, "fxHide");
+    declarations.forEach((declaration) => {
+      const { isBreakpoint, breakpoint } = checkBreakpoint(declaration);
+
       const $element = $(elem);
-      let fxFlex = $element.attr(breakpoint);
+      const classes = handleClasses("tw-collapse", isBreakpoint, breakpoint, declaration);
+      $element.addClass(classes).removeAttr(declaration);
+    })
+  })
+
+  $(":startswith([fxHide)").each((_, elem) => {
+    const $element = $(elem);
+    const fxHide = $element.attr("[fxHide]");
+
+    const ngClass = `{ 'tw-collapse': ${fxHide} }`;
+    $element.attr("[ngClass]", ngClass).removeAttr('[fxHide]')
+  })
+
+  $(":startswith(fxFlex)").each((_, elem) => {
+    const declarations = getDeclarations(elem, "fxFlex");
+    declarations.forEach((declaration) => {
+      const { isBreakpoint, breakpoint } = checkBreakpoint(declaration);
+
+      const $element = $(elem);
+      let fxFlex = $element.attr(declaration);
 
       if (!fxFlex) {
         $element.addClass(handleClasses("flex-1")).removeAttr("fxFlex");
         return;
       }
 
+      if (fxFlex.includes("calc")) {
+        if (fxFlex.startsWith('calc')) {
+          // fxFlex.lt-lg="calc(50% - 24px)"
+          $element.addClass(handleClasses(`w-[${fxFlex}]`, isBreakpoint, breakpoint, declaration)).removeAttr(declaration);
+        } else if (fxFlex.startsWith('0 0')) {
+          // fxFlex.lt-lg="0 0 calc(50% - 24px)"
+          const [grow, shrink] = fxFlex.split(" ");
+          const basis = fxFlex.split(" ").slice(2).join(" ");
+          $element.addClass(handleClasses([`grow-${grow}`, `shrink-${shrink}`, `basis-[${basis}]`], isBreakpoint, breakpoint, declaration)).removeAttr(declaration);
+        }
+
+      }
+
       if (fxFlex === "auto") {
-        $element.addClass(handleClasses("flex-auto")).removeAttr("fxFlex");
+        $element.addClass(handleClasses("flex-auto", isBreakpoint, breakpoint, declaration)).removeAttr(declaration);
         return;
       }
 
       if (fxFlex.endsWith("%")) {
-        convertWidthFromPercentageToFraction($element, fxFlex);
+        const widthClass = convertWidthFromPercentageToFraction(fxFlex);
+
+        if (!widthClass && fxFlex.split(" ").length > 2) {
+          const [grow, shrink, basis] = fxFlex.split(" ");
+          const basisFraction = percentageToFraction(parseInt(basis));
+          $element.addClass(handleClasses([`grow-${grow}`, `shrink-${shrink}`, `basis-${basisFraction}`], isBreakpoint, breakpoint, declaration)).removeAttr(declaration);
+        } else {
+          const classes = handleClasses(`basis-${widthClass}`, isBreakpoint, breakpoint, declaration);
+          $element.addClass(classes).removeAttr(declaration);
+        }
       }
 
       if (fxFlex.endsWith("px")) {
-        convertWidthFromPixels($element, fxFlex);
+        const widthClass = convertWidthFromPixels($element, fxFlex);
+        $element.addClass(handleClasses(widthClass, isBreakpoint, breakpoint, declaration)).removeAttr(declaration);
+      }
+
+      if (fxFlex === 'row') {
+        $element.addClass(handleClasses("flex-1")).removeAttr("fxFlex");
+        return;
+      }
+
+      if (fxFlex.split(" ").length > 2) {
+        const [grow, shrink, basis] = fxFlex.split(" ");
+
+        $element.addClass(handleClasses([`grow-${grow}`, `shrink-${shrink}`, `basis-${basis}`], isBreakpoint, breakpoint, declaration)).removeAttr(declaration);
+
       }
     });
   });
-  // });
-
-  // $("[fxFlex]").each((_, elem) => {
-  //   const $element = $(elem);
-  //   let fxFlex = $element.attr("fxFlex");
-
-  //   if (!fxFlex) {
-  //     $element.addClass(handleClasses("flex-1")).removeAttr("fxFlex");
-  //     return;
-  //   }
-
-  //   if (fxFlex === "auto") {
-  //     $element.addClass(handleClasses("flex-auto")).removeAttr("fxFlex");
-  //     return;
-  //   }
-
-  //   if (fxFlex.endsWith("%")) {
-  //     convertWidthFromPercentageToFraction($element, fxFlex);
-  //   }
-
-  //   if (fxFlex.endsWith("px")) {
-  //     convertWidthFromPixels($element, fxFlex);
-  //   }
-  // });
 
   $("[fxFill]").each((_, elem) => {
     const fillClasses = ["h-full", "w-full", "min-h-full", "min-w-full"];
     $(elem).addClass(handleClasses(fillClasses)).removeAttr("fxFill");
+  });
+
+  $("[fxFlexFill]").each((_, elem) => {
+    const fillClasses = ["h-full", "w-full", "min-h-full", "min-w-full"];
+    $(elem).addClass(handleClasses(fillClasses)).removeAttr("fxFlexFill");
   });
 
   let newTag = $.html();
@@ -179,21 +226,56 @@ function convertTag(tag) {
   }
 }
 
-function handleClasses(classes) {
-  if (!Array.isArray(classes)) classes = [classes];
-  const prefix = args.prefix.endsWith("-") ? args.prefix : `${args.prefix}-`;
+function checkBreakpoint(declaration) {
+  const result = {
+    isBreakpoint: false,
+    breakpoint: declaration,
+  };
 
-  return classes.flatMap((c) => (c ? `${prefix}${c}` : [])).join(" ");
+  if (declaration.includes(".")) {
+    result.isBreakpoint = true;
+    result.breakpoint = declaration.split(".")[1];
+  }
+
+  return result
+}
+
+function checkBreakpointFxLayout(declaration) {
+  const result = {
+    isBreakpoint: false,
+    breakpoint: null,
+    declaration: declaration.split(".")[0],
+  };
+
+
+  if (declaration.includes(".")) {
+    result.isBreakpoint = true;
+    result.breakpoint = declaration.split(".")[1];
+  }
+
+  return result
+}
+
+function handleClasses(classes, isBreakpoint = false, breakpoint, declaration) {
+  if (!Array.isArray(classes)) classes = [classes];
+  const prefix = args.prefix?.endsWith("-") ? args.prefix : `${args.prefix}-`;
+
+  if (isBreakpoint) {
+    classes = classes.flatMap((c) => (c ? `${prefix ?? ''}${c}` : [])).join(" ");
+    classes = `${breakpoint}:${classes}`;
+  } else {
+    classes = classes.flatMap((c) => (c ? `${prefix ?? ''}${c}` : [])).join(" ");
+  }
+  return classes
 }
 
 function convertWidthFromPixels($element, pixels) {
   const width = parseInt(pixels);
   const widthClass = width % 4 === 0 ? `w-${width / 4}` : `w-[${width}px]`;
-
-  $element.addClass(handleClasses(widthClass)).removeAttr("fxFlex");
+  return widthClass
 }
 
-function convertWidthFromPercentageToFraction($element, fxFlex) {
+function convertWidthFromPercentageToFraction(fxFlex) {
   let widthClass = "";
   const percentage = fxFlex.slice(0, -1);
   if (isNaN(+percentage)) return;
@@ -213,15 +295,15 @@ function convertWidthFromPercentageToFraction($element, fxFlex) {
       break;
   }
 
-  $element.addClass(handleClasses(`basis-${widthClass}`)).removeAttr("fxFlex");
+  return widthClass
 }
 
-function getBreakpoints(elem, name) {
+function getDeclarations(elem, name) {
   const attribs = Object.keys(elem.attribs);
   return attribs.filter((attr) => attr.startsWith(name));
 }
 
-function convertFxLayoutToTailwind($element, fxLayout) {
+function convertFxLayoutToTailwind($element, fxLayout, isBreakpoint, breakpoint, declaration) {
   let [layout, other] = (fxLayout || "column").split(" ");
 
   let className = "";
@@ -243,35 +325,35 @@ function convertFxLayoutToTailwind($element, fxLayout) {
       return;
   }
 
-  $element.addClass(handleClasses(`${className}`));
+  $element.addClass(handleClasses(`${className}`, isBreakpoint, breakpoint, declaration));
 
   if (other === "wrap") {
-    $element.addClass(handleClasses(`flex-wrap`));
+    $element.addClass(handleClasses(`flex-wrap`, isBreakpoint, breakpoint, declaration));
   }
 
   if (other === "inline") {
     $element.removeClass("flex");
-    $element.addClass(handleClasses(`inline-flex`));
+    $element.addClass(handleClasses(`inline-flex`, isBreakpoint, breakpoint, declaration));
   }
 
-  $element.removeAttr("fxLayout");
+  $element.removeAttr(declaration);
 }
 
-function convertFxLayoutGapToTailwind($element, fxLayout, fxLayoutGap) {
+function convertFxLayoutGapToTailwind($element, fxLayout, fxLayoutGap, isBreakpoint, breakpoint, declaration) {
   let [layout] = (fxLayout || "column").split(" ");
 
   if (fxLayoutGap === undefined) return;
 
   const spacing = Math.ceil(parseFloat(fxLayoutGap) / 4); // convert from pixels
-  // const spacing = Math.ceil(parseFloat(fxLayoutGap) * 4); // convert from rem
+  // const spacing = Math.ceil(parseFloat(fxLayoutGap) * 4); // TODO convert from rem
 
   if (layout === "row") {
-    $element.addClass(handleClasses(`gap-x-${spacing}`));
+    $element.addClass(handleClasses(`gap-x-${spacing}`, isBreakpoint, breakpoint, declaration));
   } else {
-    $element.addClass(handleClasses(`gap-${spacing}`));
+    $element.addClass(handleClasses(`gap-${spacing}`, isBreakpoint, breakpoint, declaration));
   }
 
-  $element.removeAttr("fxLayoutGap");
+  $element.removeAttr(declaration);
 }
 
 function gcd(a, b) {
@@ -302,18 +384,16 @@ function extractHtmlTags(html) {
     const nextCh = html[i + 1];
 
     if (!inComment && !inTag && ch === "<" && nextCh === "!") {
-      // Start of HTML comment
       inComment = true;
-      i++; // skip the next character as well (the '!' character)
+      i++;
     } else if (
       inComment &&
       ch === "-" &&
       nextCh === "-" &&
       html[i + 2] === ">"
     ) {
-      // End of HTML comment
       inComment = false;
-      i += 2; // skip the next two characters as well (the '-->' characters)
+      i += 2;
     } else if (!inComment && !inTag && ch === "<") {
       inTag = true;
       tag += ch;
@@ -338,7 +418,7 @@ function extractHtmlTags(html) {
 function convertFile(filePath) {
   const convertedData = convertFlexLayoutToTailwind(filePath);
   fs.writeFileSync(filePath, convertedData, "utf-8");
-  // console.log(`File ${filePath} converted`);
+  console.log(`File ${filePath} converted`);
 }
 
 function processFiles(folderPath, processFile, processFolder, level = 0) {
@@ -368,7 +448,7 @@ function processFiles(folderPath, processFile, processFolder, level = 0) {
   }
 }
 
-function convertFxLayoutALignToTailwind($element, fxLayoutAlign) {
+function convertFxLayoutALignToTailwind($element, fxLayoutAlign, isBreakpoint, breakpoint, declaration) {
   const [mainAxis, crossAxis] = fxLayoutAlign.split(" ");
 
   if (mainAxis !== "start" && crossAxis !== "start") {
@@ -376,17 +456,17 @@ function convertFxLayoutALignToTailwind($element, fxLayoutAlign) {
     const crossAx = crossAxisMap[crossAxis];
 
     $element
-      .addClass(handleClasses([mainAx, crossAx]))
-      .removeAttr("fxLayoutAlign");
+      .addClass(handleClasses([mainAx, crossAx], isBreakpoint, breakpoint, declaration))
+      .removeAttr(declaration);
   } else if (mainAxis !== "start") {
     $element
-      .addClass(handleClasses(mainAxisMap[mainAxis]))
-      .removeAttr("fxLayoutAlign");
+      .addClass(handleClasses(mainAxisMap[mainAxis], isBreakpoint, breakpoint, declaration))
+      .removeAttr(declaration);
   } else {
     $element
-      .addClass(handleClasses(crossAxisMap[crossAxis]))
-      .removeAttr("fxLayoutAlign");
+      .addClass(handleClasses(crossAxisMap[crossAxis], isBreakpoint, breakpoint, declaration))
+      .removeAttr(declaration);
   }
 }
 
-processFiles("/home/claudiogoncalveslck/Work/frontend", convertFile);
+processFiles(args.path ?? process.cwd(), convertFile);
